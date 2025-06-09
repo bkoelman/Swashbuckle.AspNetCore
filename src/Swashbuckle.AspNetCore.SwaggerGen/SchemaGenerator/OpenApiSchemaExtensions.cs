@@ -252,50 +252,67 @@ public static class OpenApiSchemaExtensions
 
     private static void ApplyRangeAttribute(OpenApiSchema schema, RangeAttribute rangeAttribute)
     {
-        object maximumValue = null;
-        object minimumValue = null;
+        object maximumNumber = null;
+        object minimumNumber = null;
 
-        if (rangeAttribute.Maximum is double || rangeAttribute.Minimum is int)
+        if (rangeAttribute.Minimum is double or int)
         {
             // The range was set with the RangeAttribute(double, double) or RangeAttribute(int, int)
             // constructor so we can safely convert the values to strings using the invariant culture
             // as we have primitive values to operate on.
-            maximumValue = rangeAttribute.Maximum;
-            minimumValue = rangeAttribute.Minimum;
+            maximumNumber = rangeAttribute.Maximum;
+            minimumNumber = rangeAttribute.Minimum;
         }
         else
         {
-            // Parse the range from the RangeAttribute(double, double) or RangeAttribute(string, string) constructor.
+            // Parse the range from the RangeAttribute(string, string) constructor.
             // Use the appropriate culture as the user may have specified a culture-specific format for the numbers
-            // if they specified the value as a string. By default RangeAttribute uses the current culture, but it
+            // if they specified the value as a string. By default, RangeAttribute uses the current culture, but it
             // can be set to use the invariant culture.
-            var targetCulture = rangeAttribute.ParseLimitsInInvariantCulture || rangeAttribute.Minimum is double
-                ? CultureInfo.InvariantCulture
-                : CultureInfo.CurrentCulture;
+            var targetCulture = rangeAttribute.ParseLimitsInInvariantCulture ? CultureInfo.InvariantCulture : CultureInfo.CurrentCulture;
 
-            var maxString = Convert.ToString(rangeAttribute.Maximum, targetCulture);
-            var minString = Convert.ToString(rangeAttribute.Minimum, targetCulture);
+            object maxValue;
+            object minValue;
+
+            if (rangeAttribute.Maximum is string maximum && rangeAttribute.Minimum is string minimum)
+            {
+                // Lazy runtime-type conversion of min/max properties inside RangeAttribute hasn't run yet.
+                // Handle user-defined types that provide a custom TypeConverter.
+                var converter = TypeDescriptor.GetConverter(rangeAttribute.OperandType);
+                maxValue = converter.ConvertFrom(null, targetCulture, maximum);
+                minValue = converter.ConvertFrom(null, targetCulture, minimum);
+            }
+            else
+            {
+                // To hit this code path, run the following statement in the debugger, just before entering this if statement:
+                //   rangeAttribute.IsValid(null)
+                maxValue = rangeAttribute.Maximum;
+                minValue = rangeAttribute.Minimum;
+            }
+
+            var maxString = Convert.ToString(maxValue, targetCulture);
+            var minString = Convert.ToString(minValue, targetCulture);
 
             if (decimal.TryParse(maxString, NumberStyles.Any, targetCulture, out var value))
             {
-                maximumValue = value;
+                maximumNumber = value;
             }
 
             if (decimal.TryParse(minString, NumberStyles.Any, targetCulture, out value))
             {
-                minimumValue = value;
+                minimumNumber = value;
             }
         }
 
         // Ensure that the conversion to string is done using the invariant culture so valid JSON is generated
-        if (maximumValue is not null)
+        if (maximumNumber is not null)
         {
-            schema.Maximum = Convert.ToString(maximumValue, CultureInfo.InvariantCulture);
+            schema.Maximum = Convert.ToString(maximumNumber, CultureInfo.InvariantCulture);
         }
 
-        if (minimumValue is not null)
+        if (minimumNumber is not null)
         {
-            schema.Minimum = Convert.ToString(minimumValue, CultureInfo.InvariantCulture);
+            schema.Minimum = Convert.ToString(minimumNumber, CultureInfo.InvariantCulture);
         }
 
 #if NET
