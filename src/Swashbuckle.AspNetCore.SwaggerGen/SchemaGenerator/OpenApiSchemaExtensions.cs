@@ -252,68 +252,58 @@ public static class OpenApiSchemaExtensions
 
     private static void ApplyRangeAttribute(OpenApiSchema schema, RangeAttribute rangeAttribute)
     {
-        object maximumNumber = null;
-        object minimumNumber = null;
-
-        if (rangeAttribute.Minimum is double or int)
+        // This call ensures that the non-public RangeAttribute.SetupConversion() has executed, which ensures that the parameters
+        // from the RangeAttribute(string, string) constructor are exposed via its Minimum/Maximum properties as non-string objects.
+        // By default, RangeAttribute uses the current culture to parse these strings, but it can be set to use the invariant culture.
+        // SetupConversion takes custom TypeConverters into account, passing null for the culture parameter to indicate using the
+        // current culture.
+        try
         {
-            // The range was set with the RangeAttribute(double, double) or RangeAttribute(int, int)
-            // constructor so we can safely convert the values to strings using the invariant culture
-            // as we have primitive values to operate on.
+            _ = rangeAttribute.IsValid(null);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            // The parameters used on RangeAttribute are invalid. ASP.NET model validation will result in HTTP 500, but ignore them here.
+            return;
+        }
+
+        object maximumNumber;
+        object minimumNumber;
+
+#if NET8_0_OR_GREATER
+        if (rangeAttribute.Minimum.GetType().GetInterface("System.Numerics.INumber`1") != null)
+#else
+        if (rangeAttribute.Minimum is decimal or double or float or System.Numerics.BigInteger or long or ulong or int or uint
+            or short or ushort or char or byte or sbyte)
+#endif
+        {
+            // Numeric types implement IFormattable, so we can safely call Convert.ToString below, passing the invariant culture to it.
             maximumNumber = rangeAttribute.Maximum;
             minimumNumber = rangeAttribute.Minimum;
         }
         else
         {
-            // Parse the range from the RangeAttribute(string, string) constructor.
-            // Use the appropriate culture as the user may have specified a culture-specific format for the numbers
-            // if they specified the value as a string. By default, RangeAttribute uses the current culture, but it
-            // can be set to use the invariant culture.
-            var targetCulture = rangeAttribute.ParseLimitsInInvariantCulture ? CultureInfo.InvariantCulture : CultureInfo.CurrentCulture;
+            // RangeAttribute doesn't require custom types to implement IConvertible or IFormattable, so we're not imposing
+            // such requirements here. Instead, rely on TypeConverter to perform the conversion, which is required already.
+            // We pass null for the current culture, to mimic the behavior of SetupConversion described above.
+            var targetCulture = rangeAttribute.ParseLimitsInInvariantCulture ? CultureInfo.InvariantCulture : null;
 
-            object maxValue;
-            object minValue;
-
-            if (rangeAttribute.Maximum is string maximum && rangeAttribute.Minimum is string minimum)
+            var typeConverter = TypeDescriptor.GetConverter(rangeAttribute.OperandType);
+            try
             {
-                // Lazy runtime-type conversion of min/max properties inside RangeAttribute hasn't run yet.
-                // Handle user-defined types that provide a custom TypeConverter.
-                var converter = TypeDescriptor.GetConverter(rangeAttribute.OperandType);
-                maxValue = converter.ConvertFrom(null, targetCulture, maximum);
-                minValue = converter.ConvertFrom(null, targetCulture, minimum);
+                maximumNumber = (decimal)typeConverter.ConvertTo(null, targetCulture, rangeAttribute.Maximum, typeof(decimal))!;
+                minimumNumber = (decimal)typeConverter.ConvertTo(null, targetCulture, rangeAttribute.Minimum, typeof(decimal))!;
             }
-            else
+            catch (NotSupportedException)
             {
-                // To hit this code path, run the following statement in the debugger, just before entering this if statement:
-                //   rangeAttribute.IsValid(null)
-                maxValue = rangeAttribute.Maximum;
-                minValue = rangeAttribute.Minimum;
-            }
-
-            var maxString = Convert.ToString(maxValue, targetCulture);
-            var minString = Convert.ToString(minValue, targetCulture);
-
-            if (decimal.TryParse(maxString, NumberStyles.Any, targetCulture, out var value))
-            {
-                maximumNumber = value;
-            }
-
-            if (decimal.TryParse(minString, NumberStyles.Any, targetCulture, out value))
-            {
-                minimumNumber = value;
+                // TypeConverter doesn't provide conversion to decimal, which we need to express min/max without rounding errors.
+                return;
             }
         }
 
-        // Ensure that the conversion to string is done using the invariant culture so valid JSON is generated
-        if (maximumNumber is not null)
-        {
-            schema.Maximum = Convert.ToString(maximumNumber, CultureInfo.InvariantCulture);
-        }
-
-        if (minimumNumber is not null)
-        {
-            schema.Minimum = Convert.ToString(minimumNumber, CultureInfo.InvariantCulture);
-        }
+        // Ensure that the conversion to string is done using the invariant culture, so valid JSON is generated.
+        schema.Maximum = Convert.ToString(maximumNumber, CultureInfo.InvariantCulture);
+        schema.Minimum = Convert.ToString(minimumNumber, CultureInfo.InvariantCulture);
 
 #if NET
         if (rangeAttribute.MaximumIsExclusive)
